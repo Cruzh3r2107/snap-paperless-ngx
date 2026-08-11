@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+source "$SNAP/bin/paperless-common"
+exec python3 manage.py "$@"

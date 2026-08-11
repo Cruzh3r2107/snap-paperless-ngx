@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+# Bundled Redis broker: TCP on loopback only.
+#
+# AF_UNIX *pathname* bind() (e.g. --unixsocket $SNAP_COMMON/redis.sock) is denied
+# by kernel AppArmor socket-address mediation under strict confinement, so the
+# broker must listen on TCP. Bind to 127.0.0.1 only so it is never exposed off
+# the host; protected-mode is therefore safe to disable. Data/working dir stays
+# under $SNAP_COMMON; logs go to stdout (captured by journald).
+mkdir -p "$SNAP_COMMON/redis"
+exec "$SNAP/usr/bin/redis-server" \
+  --bind 127.0.0.1 \
+  --port 6379 \
+  --protected-mode no \
+  --dir "$SNAP_COMMON/redis" \
+  --save "" \
+  --daemonize no

@@ -1,0 +1,337 @@
+name: vsingh-paperless
+base: core24
+version: '3.0.5'
+title: Paperless-ngx
+summary: Scan, index and archive all your physical documents
+description: |
+  Paperless-ngx is a community-supported document management system that
+  transforms your physical documents into a searchable online archive. It
+  ingests documents from a consume directory or email, runs OCR (via
+  OCRmyPDF/Tesseract), extracts text and metadata, and provides a web UI and
+  REST API to tag, search and manage them.
+
+  The application is a multi-process Django (Python) service: an ASGI web
+  server (Granian), a Celery task worker, a Celery beat scheduler, and a
+  file-watching document consumer. It requires a Redis broker (bundled in this
+  snap and run over TCP on 127.0.0.1:6379) and uses SQLite by default
+  (PostgreSQL optionally).
+
+  After install, browse to http://localhost:8000. Set an admin account with:
+    sudo snap set vsingh-paperless admin-user=admin admin-password=secret
+
+license: GPL-3.0-only
+grade: stable
+confinement: strict
+
+layout:
+  /etc/ImageMagick-6:
+    bind: $SNAP/etc/ImageMagick-6
+
+plugs:
+  # Private /dev/shm namespace so celery/billiard (and Python multiprocessing)
+  # can create arbitrarily-named POSIX semaphores (sem.mp-*) that the strict
+  # profile otherwise denies. private:true auto-connects; no slot snap needed.
+  shared-memory:
+    interface: shared-memory
+    private: true
+
+apps:
+  webserver:
+    command: bin/paperless-webserver
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - network
+      - network-bind
+      - shared-memory
+    environment:
+      PAPERLESS_CONFIGURATION_PATH: $SNAP_COMMON/paperless.conf
+      PYTHONPATH: $SNAP/src:$SNAP/lib/paperless
+      GRANIAN_HOST: "0.0.0.0"
+      GRANIAN_PORT: "8000"
+
+  worker:
+    command: bin/paperless-worker
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - network
+      - home
+      - removable-media
+      - shared-memory
+    environment:
+      PAPERLESS_CONFIGURATION_PATH: $SNAP_COMMON/paperless.conf
+      PYTHONPATH: $SNAP/src:$SNAP/lib/paperless
+
+  scheduler:
+    command: bin/paperless-scheduler
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - network
+      - shared-memory
+    environment:
+      PAPERLESS_CONFIGURATION_PATH: $SNAP_COMMON/paperless.conf
+      PYTHONPATH: $SNAP/src:$SNAP/lib/paperless
+
+  consumer:
+    command: bin/paperless-consumer
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - network
+      - home
+      - removable-media
+    environment:
+      PAPERLESS_CONFIGURATION_PATH: $SNAP_COMMON/paperless.conf
+      PYTHONPATH: $SNAP/src:$SNAP/lib/paperless
+
+  redis:
+    command: bin/paperless-redis
+    daemon: simple
+    restart-condition: always
+    plugs:
+      - network
+      - network-bind
+
+  manage:
+    command: bin/paperless-manage
+    plugs:
+      - network
+      - home
+      - removable-media
+    environment:
+      PAPERLESS_CONFIGURATION_PATH: $SNAP_COMMON/paperless.conf
+      PYTHONPATH: $SNAP/src:$SNAP/lib/paperless
+
+parts:
+  frontend:
+    plugin: nil
+    source: https://github.com/paperless-ngx/paperless-ngx.git
+    source-tag: v3.0.5
+    source-depth: 1
+    build-snaps:
+      - node/24/stable
+    override-build: |
+      set -eux
+      # The node build-snap exposes node/npm via /snap/bin, but corepack lives
+      # in the snap's internal bin — put it on PATH explicitly.
+      export PATH="/snap/node/current/bin:$PATH"
+      # Do NOT `corepack enable` (it writes shims into the read-only node snap).
+      # Run pnpm through corepack, which fetches the pinned version into a
+      # writable cache instead.
+      export COREPACK_HOME="$CRAFT_PART_BUILD/.corepack"
+      mkdir -p "$COREPACK_HOME"
+      cd "$CRAFT_PART_SRC/src-ui"
+      corepack pnpm install --frozen-lockfile
+      ./node_modules/.bin/ng build --configuration production
+      # Production config emits into ../src/documents/static/frontend/
+      mkdir -p "$CRAFT_PART_INSTALL/src/documents/static/frontend"
+      cp -r "$CRAFT_PART_SRC/src/documents/static/frontend/." \
+            "$CRAFT_PART_INSTALL/src/documents/static/frontend/"
+    stage:
+      - src/documents/static/frontend
+
+  backend:
+    after:
+      - frontend
+    plugin: nil
+    source: https://github.com/paperless-ngx/paperless-ngx.git
+    source-tag: v3.0.5
+    source-depth: 1
+    build-packages:
+      - build-essential
+      - pkg-config
+      - gettext
+      - curl
+      - ca-certificates
+      - python3-dev
+      - libmagic1
+    stage-packages:
+      # 'python3' alone is a near-empty metapackage (only docs/support files) and
+      # does NOT ship the interpreter. These provide /usr/bin/python3.12, the
+      # /usr/bin/python3 symlink, libpython3.12, and the full stdlib for core24.
+      - python3.12-minimal
+      - libpython3.12-minimal
+      - libpython3.12-stdlib
+      - python3-minimal
+      - python3
+      - ca-certificates
+      - tesseract-ocr
+      - tesseract-ocr-eng
+      - tesseract-ocr-deu
+      - tesseract-ocr-fra
+      - tesseract-ocr-ita
+      - tesseract-ocr-spa
+      - ghostscript
+      - imagemagick
+      - icc-profiles-free
+      - unpaper
+      - pngquant
+      - jbig2dec
+      - qpdf
+      - poppler-utils
+      - gnupg
+      - file
+      - libmagic1
+      - media-types
+      - libxml2
+      - libxslt1.1
+      - zlib1g
+      - fonts-liberation
+      - gettext
+      - tzdata
+      - redis-server
+    override-build: |
+      set -eux
+      craftctl default
+
+      # --- Install uv (pinned to the version used upstream) ---
+      export UV_INSTALL_DIR=/usr/local/bin
+      curl -LsSf https://astral.sh/uv/0.11.32/install.sh | sh
+      export PATH="/usr/local/bin:$PATH"
+
+      cd "$CRAFT_PART_SRC"
+
+      # --- Python backend dependencies (Python 3.12 via uv) ---
+      # Resolve deps from the lock; torch comes from the pytorch cpu index and
+      # psycopg-c from a direct URL, hence unsafe-best-match across both indexes.
+      uv export --quiet --no-dev \
+        --extra webserver --extra postgres \
+        --format requirements-txt --output-file requirements.txt
+      uv pip install \
+        --no-cache \
+        --python /usr/bin/python3 \
+        --target "$CRAFT_PART_INSTALL/lib/paperless" \
+        --index https://pypi.org/simple \
+        --index https://download.pytorch.org/whl/cpu \
+        --index-strategy unsafe-best-match \
+        --requirements requirements.txt
+
+      # Normalise console-script shebangs to the snap's python at runtime.
+      if [ -d "$CRAFT_PART_INSTALL/lib/paperless/bin" ]; then
+        sed -i '1s|^#!.*python.*|#!/usr/bin/env python3|' \
+          "$CRAFT_PART_INSTALL"/lib/paperless/bin/* 2>/dev/null || true
+      fi
+
+      # --- Copy the application source tree ---
+      cp -r "$CRAFT_PART_SRC/src" "$CRAFT_PART_INSTALL/src"
+
+      # Pull in the compiled Angular frontend from the frontend part.
+      mkdir -p "$CRAFT_PART_INSTALL/src/documents/static/frontend"
+      cp -r "$CRAFT_STAGE/src/documents/static/frontend/." \
+            "$CRAFT_PART_INSTALL/src/documents/static/frontend/"
+
+      # --- NLTK data (downloaded at build time, served read-only from $SNAP) ---
+      # NLTK's downloader only writes to paths registered in nltk.data.path;
+      # exporting NLTK_DATA authorises our target directory.
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/nltk_data"
+      NLTK_DATA="$CRAFT_PART_INSTALL/usr/share/nltk_data" \
+      PYTHONPATH="$CRAFT_PART_INSTALL/lib/paperless" \
+        /usr/bin/python3 -W ignore::RuntimeWarning -m nltk.downloader \
+        -d "$CRAFT_PART_INSTALL/usr/share/nltk_data" \
+        snowball_data stopwords punkt_tab
+
+      # --- collectstatic + compilemessages ---
+      cd "$CRAFT_PART_INSTALL/src"
+      export PYTHONPATH="$CRAFT_PART_INSTALL/lib/paperless"
+      export PAPERLESS_SECRET_KEY=build-time-dummy
+      export PAPERLESS_STATICDIR="$CRAFT_PART_INSTALL/static"
+      export PAPERLESS_NLTK_DIR="$CRAFT_PART_INSTALL/usr/share/nltk_data"
+      export PAPERLESS_DATA_DIR="$CRAFT_PART_BUILD/ppbuild/data"
+      export PAPERLESS_MEDIA_ROOT="$CRAFT_PART_BUILD/ppbuild/media"
+      export PAPERLESS_CONSUMPTION_DIR="$CRAFT_PART_BUILD/ppbuild/consume"
+      export PAPERLESS_LOGGING_DIR="$CRAFT_PART_BUILD/ppbuild/log"
+      mkdir -p "$PAPERLESS_STATICDIR" \
+               "$PAPERLESS_DATA_DIR" "$PAPERLESS_MEDIA_ROOT" \
+               "$PAPERLESS_CONSUMPTION_DIR" "$PAPERLESS_LOGGING_DIR"
+      /usr/bin/python3 manage.py collectstatic --clear --no-input
+      /usr/bin/python3 manage.py compilemessages
+
+      # --- ImageMagick PDF/PS policy (permit coders blocked by Debian default) ---
+      mkdir -p "$CRAFT_PART_INSTALL/etc/ImageMagick-6"
+      cp "$CRAFT_PART_SRC/docker/rootfs/etc/ImageMagick-6/paperless-policy.xml" \
+         "$CRAFT_PART_INSTALL/etc/ImageMagick-6/policy.xml"
+
+      # --- ImageMagick command symlinks ---
+      # The imagemagick package normally exposes `convert`/`mogrify`/`identify`
+      # via update-alternatives, whose postinst does NOT run during snap staging.
+      # Only the versioned `*-im6.q16` binaries land in $SNAP/usr/bin, so paperless
+      # (PAPERLESS_CONVERT_BINARY default "convert") and OCRmyPDF can't find them.
+      # Create the plain-name symlinks so they resolve on PATH ($SNAP/usr/bin).
+      for tool in convert mogrify identify; do
+        ln -sf "${tool}-im6.q16" "$CRAFT_PART_INSTALL/usr/bin/${tool}"
+      done
+
+  wrappers:
+    after:
+      - backend
+    plugin: dump
+    source: snap/local
+    override-prime: |
+      craftctl default
+      chmod +x "$CRAFT_PRIME"/bin/paperless-* 2>/dev/null || true
+
+  # Runs last (after every other part) and prunes build-only / redundant files
+  # from the primed tree. All removals are non-runtime artifacts; the app source,
+  # compiled .so/.pyc, served static assets, and every license file are preserved.
+  cleanup:
+    after:
+      - frontend
+      - backend
+      - wrappers
+    plugin: nil
+    source: .
+    override-prime: |
+      craftctl default
+      set -eux
+
+      # --- Item 1: redundant collectstatic SOURCE tree (~241 MB) ---
+      # At runtime the Angular assets are served from $SNAP/static/frontend by
+      # whitenoise (CompressedStaticFilesStorage; PAPERLESS_STATICDIR=$SNAP/static).
+      # src/documents/static/frontend is only the collectstatic *input* and is not
+      # read at runtime (IndexView renders documents/templates/index.html, which
+      # references assets via /static/ URLs). Every frontend 3rd-party license file
+      # is ALSO present under static/frontend, so dropping this duplicate source
+      # tree loses no license coverage.
+      rm -rf "$CRAFT_PRIME/src/documents/static/frontend"
+
+      # --- Item 2: torch build/dev/test artifacts (never loaded at runtime) ---
+      # C++ headers (for building extensions), the C++ gtest suite, and the
+      # test_*/protoc binaries. Keep torch_shm_manager (runtime shared-memory
+      # helper) and upgrader_models (TorchScript model upgraders).
+      rm -rf "$CRAFT_PRIME/lib/paperless/torch/include"   # ~60 MB C++ headers
+      rm -rf "$CRAFT_PRIME/lib/paperless/torch/test"      # ~83 MB gtest suite
+      if [ -d "$CRAFT_PRIME/lib/paperless/torch/bin" ]; then
+        find "$CRAFT_PRIME/lib/paperless/torch/bin" -maxdepth 1 -type f \
+          \( -name 'test_*' -o -name '*Test' -o -name 'protoc*' \) -delete
+      fi
+
+      # --- Items 3 & 4: Python package test suites + app test suites (~130 MB) ---
+      # Remove only 'tests' (plural) dirs — the near-universal test-suite convention.
+      # Do NOT match singular 'test': that can be a real runtime package (e.g.
+      # django/test, imported transitively via drf_spectacular -> rest_framework.test
+      # in DocumentsConfig.ready()). Exclude *.dist-info so bundled third-party
+      # LICENSE files under dist-info/licenses/**/test/ are preserved.
+      find "$CRAFT_PRIME/lib/paperless" -type d -name tests \
+        -not -path '*.dist-info*' -prune -exec rm -rf {} +
+      find "$CRAFT_PRIME/src" -type d -name tests -prune -exec rm -rf {} +
+
+      # --- Item 8: Cython source intermediates in wheels (~12 MB) ---
+      # The compiled .so is what loads at runtime; the .c/.pyx/.pxd are build-only.
+      find "$CRAFT_PRIME/lib/paperless" -type f \
+        \( -name '*.c' -o -name '*.cpp' -o -name '*.pyx' -o -name '*.pxd' \
+           -o -name '*.pxi' \) -not -path '*.dist-info*' -delete
+
+      # --- Item 5: classic doc/cruft; KEEP every license file ---
+      # (copyright, LICENSE*, LICENCE*, COPYING*, NOTICE*, UNLICENSE* — Snap Store
+      #  license-compliance requirement, safety rule 1).
+      for CRUFT in man info lintian bug; do
+        rm -rf "$CRAFT_PRIME/usr/share/$CRUFT"
+      done
+      find "$CRAFT_PRIME/usr/share/doc/" -type f \
+        ! -name 'copyright' ! -iname 'LICENSE*' ! -iname 'LICENCE*' \
+        ! -iname 'COPYING*' ! -iname 'COPYRIGHT*' ! -iname 'NOTICE*' \
+        ! -iname 'UNLICENSE*' -delete 2>/dev/null || true
+      find "$CRAFT_PRIME" -type f \( -name '*.a' -o -name '*.la' \) -delete
+      find "$CRAFT_PRIME/usr/share" -type d -empty -delete 2>/dev/null || true

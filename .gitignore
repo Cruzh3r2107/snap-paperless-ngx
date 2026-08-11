@@ -1,0 +1,26 @@
+# This is a snap PACKAGING repo. snapcraft.yaml builds paperless-ngx from
+# upstream git at a pinned tag (source-tag: v3.0.5), so no application source
+# belongs in here — only the packaging that wraps it.
+#
+# Strategy: ignore everything, then re-include the packaging files. An
+# allowlist is used deliberately: a blocklist missed the 506 MB .snap and the
+# 571 MB .orig, and a blob over 100 MB is rejected outright by GitHub.
+
+/*
+/.*
+
+!/.gitignore
+!/README.md
+!/snap/
+!/SNAP_PACKAGING.md
+
+# Build artefacts stay ignored even though snap/ is re-included above.
+*.snap
+*.snap.orig
+parts/
+stage/
+prime/
+
+# Machine-generated validation output; the durable findings live in
+# SNAP_PACKAGING.md instead.
+snap-validation-results.json

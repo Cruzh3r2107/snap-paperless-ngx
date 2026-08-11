@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+CONF="$SNAP_COMMON/paperless.conf"
+[ -f "$CONF" ] || exit 0
+
+# Upsert a KEY=VALUE line in paperless.conf.
+set_conf() {
+    local key="$1" val="$2"
+    [ -z "$val" ] && return 0
+    if grep -q "^${key}=" "$CONF"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$CONF"
+    else
+        echo "${key}=${val}" >> "$CONF"
+    fi
+}
+
+PORT="$(snapctl get port || true)"
+URL="$(snapctl get url || true)"
+OCR_LANGUAGE="$(snapctl get ocr-language || true)"
+TIME_ZONE="$(snapctl get time-zone || true)"
+ADMIN_USER="$(snapctl get admin-user || true)"
+ADMIN_PASSWORD="$(snapctl get admin-password || true)"
+
+set_conf PAPERLESS_PORT "$PORT"
+set_conf PAPERLESS_URL "$URL"
+set_conf PAPERLESS_OCR_LANGUAGE "$OCR_LANGUAGE"
+set_conf PAPERLESS_TIME_ZONE "$TIME_ZONE"
+
+# The webserver wrapper honours GRANIAN_PORT; mirror the requested port there too.
+if [ -n "$PORT" ]; then
+    snapctl set port="$PORT" >/dev/null 2>&1 || true
+fi
+
+# Create/update the admin superuser when both credentials are provided.
+if [ -n "$ADMIN_USER" ] && [ -n "$ADMIN_PASSWORD" ]; then
+    export PAPERLESS_CONFIGURATION_PATH="$CONF"
+    export PYTHONPATH="$SNAP/src:$SNAP/lib/paperless"
+    export PATH="$SNAP/usr/bin:$SNAP/lib/paperless/bin:$PATH"
+    export LD_LIBRARY_PATH="$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib:$LD_LIBRARY_PATH"
+    export PAPERLESS_ADMIN_USER="$ADMIN_USER"
+    export PAPERLESS_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+    cd "$SNAP/src"
+    "$SNAP/usr/bin/python3" manage.py manage_superuser || true
+fi
+
+# Restart services so they pick up the new configuration (ignore if not yet running).
+for svc in webserver worker scheduler consumer; do
+    snapctl restart "${SNAP_INSTANCE_NAME}.${svc}" 2>/dev/null || true
+done

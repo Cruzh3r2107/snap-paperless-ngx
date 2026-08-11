@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+# Apply schema migrations after a refresh, before the daemons serve again.
+CONF="$SNAP_COMMON/paperless.conf"
+[ -f "$CONF" ] || exit 0
+
+export PAPERLESS_CONFIGURATION_PATH="$CONF"
+export PYTHONPATH="$SNAP/src:$SNAP/lib/paperless"
+export PATH="$SNAP/usr/bin:$SNAP/lib/paperless/bin:$PATH"
+export LD_LIBRARY_PATH="$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib:$LD_LIBRARY_PATH"
+cd "$SNAP/src"
+
+"$SNAP/usr/bin/python3" manage.py migrate --skip-checks --no-input || true
+"$SNAP/usr/bin/python3" manage.py document_index reindex --if-needed --no-progress-bar || true

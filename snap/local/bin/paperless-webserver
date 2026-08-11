@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+source "$SNAP/bin/paperless-common"
+
+export GRANIAN_HOST="${GRANIAN_HOST:-0.0.0.0}"
+export GRANIAN_PORT="${GRANIAN_PORT:-8000}"
+
+# Ensure the database schema and search index are ready before serving.
+# migrate is safe without Redis (SQLite default); reindex is best-effort.
+python3 manage.py migrate --skip-checks --no-input || true
+python3 manage.py document_index reindex --if-needed --no-progress-bar || true
+
+exec granian --interface asginl --ws --loop uvloop "paperless.asgi:application"

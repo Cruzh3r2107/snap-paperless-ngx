@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+
+# Create writable runtime directories (paths are read-only in the snap tree).
+mkdir -p \
+  "$SNAP_COMMON/data" \
+  "$SNAP_COMMON/media" \
+  "$SNAP_COMMON/consume" \
+  "$SNAP_COMMON/export" \
+  "$SNAP_COMMON/log" \
+  "$SNAP_COMMON/tmp"
+
+CONF="$SNAP_COMMON/paperless.conf"
+
+# Refresh-safe path to the active revision (paperless.conf is read verbatim by
+# load_dotenv, so $SNAP env vars are NOT expanded; the versioned $SNAP path would
+# break on refresh, hence /snap/<name>/current).
+SNAP_CURRENT="/snap/${SNAP_NAME}/current"
+
+# Seed paperless.conf on first install only. Never overwrite user edits on refresh.
+if [ ! -f "$CONF" ]; then
+    SECRET="$("$SNAP/usr/bin/python3" -c 'import secrets; print(secrets.token_urlsafe(64))')"
+    cat > "$CONF" <<EOF
+# Managed defaults seeded by the snap install hook.
+# Edit freely; the snap will not overwrite this file on refresh.
+PAPERLESS_SECRET_KEY=$SECRET
+PAPERLESS_REDIS=redis://localhost:6379
+PAPERLESS_DATA_DIR=$SNAP_COMMON/data
+PAPERLESS_MEDIA_ROOT=$SNAP_COMMON/media
+PAPERLESS_CONSUMPTION_DIR=$SNAP_COMMON/consume
+PAPERLESS_EXPORT_DIR=$SNAP_COMMON/export
+PAPERLESS_LOGGING_DIR=$SNAP_COMMON/log
+PAPERLESS_CONVERT_TMPDIR=$SNAP_COMMON/tmp
+PAPERLESS_NLTK_DIR=$SNAP/usr/share/nltk_data
+PAPERLESS_STATICDIR=$SNAP/static
+PAPERLESS_CONVERT_BINARY=$SNAP_CURRENT/usr/bin/convert
+PAPERLESS_GS_BINARY=$SNAP_CURRENT/usr/bin/gs
+PAPERLESS_OCR_LANGUAGE=eng
+PAPERLESS_TIME_ZONE=UTC
+EOF
+    chmod 600 "$CONF"
+fi
+
+# Apply database migrations on first install (SQLite default needs no Redis).
+export PAPERLESS_CONFIGURATION_PATH="$CONF"
+export PYTHONPATH="$SNAP/src:$SNAP/lib/paperless"
+export PATH="$SNAP/usr/bin:$SNAP/lib/paperless/bin:$PATH"
+export LD_LIBRARY_PATH="$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib:$LD_LIBRARY_PATH"
+cd "$SNAP/src"
+"$SNAP/usr/bin/python3" manage.py migrate --skip-checks --no-input || true
