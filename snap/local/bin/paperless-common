@@ -15,26 +15,20 @@ export TESSDATA_PREFIX="$SNAP/usr/share/tesseract-ocr/5/tessdata"
 export SSL_CERT_FILE="$SNAP/etc/ssl/certs/ca-certificates.crt"
 export SSL_CERT_DIR="$SNAP/etc/ssl/certs"
 
-# ImageMagick: the compiled-in module path points at the host filesystem, so
-# convert cannot find its coder/filter delegates (e.g. png.so) under confinement.
-# Derive the staged module dirs at runtime (version-agnostic) so a stage-package
-# bump does not break decode of PNG/JPEG/etc. These exports propagate to convert
-# invoked by OCRmyPDF child processes via the inherited daemon environment.
+# ImageMagick's compiled-in module path points at the host, so convert cannot
+# find its coders (png.so etc) under confinement. Globbed rather than hardcoded
+# so a stage-package version bump does not break image decode.
 for _im_modules in "$SNAP"/usr/lib/*/ImageMagick-*/modules-Q16; do
   [ -d "$_im_modules/coders" ] || continue
   export MAGICK_CODER_MODULE_PATH="$_im_modules/coders"
   export MAGICK_CODER_FILTER_PATH="$_im_modules/filters"
-  # ImageMagick also honours MAGICK_CONFIGURE_PATH for delegates/type files.
   for _im_config in "$SNAP"/etc/ImageMagick-6 "$_im_modules/../config-Q16"; do
     [ -d "$_im_config" ] && export MAGICK_CONFIGURE_PATH="${MAGICK_CONFIGURE_PATH:+$MAGICK_CONFIGURE_PATH:}$_im_config"
   done
   break
 done
 
-# Ghostscript: gs cannot locate gs_init.ps under confinement because its
-# compiled-in resource path points at the host. Derive the staged resource dirs
-# at runtime (version-agnostic) so gs init, and the archive-PDF/thumbnail path,
-# work. Inherited by gs invoked by OCRmyPDF child processes.
+# Same problem for Ghostscript: gs cannot locate gs_init.ps without this.
 for _gs_ver in "$SNAP"/usr/share/ghostscript/*; do
   [ -d "$_gs_ver/Resource/Init" ] || continue
   export GS_LIB="$_gs_ver/Resource/Init:$_gs_ver/lib:$_gs_ver/Resource/Font"
